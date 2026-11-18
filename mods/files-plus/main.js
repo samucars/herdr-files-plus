@@ -7,7 +7,7 @@
 // Drag a row onto a folder to move it (⌥ copies); drop files from Finder to copy them in.
 // The same mod also draws its own menu (props.menu) and dialogs (props.dialog).
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, InputState, Input, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, exec, run, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, shared, setShared, openOverlay, closeOverlay, notify } from "herdr";
 import * as ops from "./ops.js";
 import ICONS from "./icons.js";
@@ -314,7 +314,14 @@ class DeleteDialog {
 // The whole file in an editor, in its own tab. ⌘S saves (this computer only:
 // writeTextFile can't reach other machines, so files there are read-only).
 // A save refuses to overwrite changes made on disk since the file was read.
+// The find box (⌘F): while it has text, the editor gives way to a read-only view of
+// the file with every match marked (the editor can't mark text) and the current one
+// highlighted; Enter / ⌘G next, ⇧Enter / ⇧⌘G previous. Esc, or a click on a line,
+// goes back to the editor with that match selected.
 const SYNTAX = (t) => ({ keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 });
+const MAX_FIND = 10000, ROW = 20;
+// A theme color at some opacity ("#rrggbb" + alpha), or the fallback for other forms.
+const tint = (hex, alpha, fallback) => /^#[0-9a-f]{6}$/i.test(hex ?? "") ? hex + alpha : fallback;
 const lineRange = (text, line) => {
   let start = 0;
   for (let i = 1; i < line && start >= 0; i++) start = text.indexOf("\n", start) + 1 || -1;
@@ -330,8 +337,112 @@ class FileTab {
     this.name = ops.base(this.path);
     this.readonly = Boolean(this.on);
     this.gotoN = shared("files-plus.goto")?.n;
+    this.matches = []; this.at = -1; this.lines = [];
+    this.scroll = VirtualListScrollHandle.new();
+    this.find = InputState.new({ placeholder: "Find in file…" });
+    this.find.on("change", (_e, cx) => this.runFind(cx, true));
+    this.find.on("submit", (e, cx) => this.step(e?.shift ? -1 : 1, cx));
+    this.find.on("focus", (_e, cx) => { this.findFocused = true; cx.notify(); });
+    this.find.on("blur", (_e, cx) => { this.findFocused = false; cx.notify(); });
     this.load(cx, p.line);
     if (!this.on) this.watch(cx);
+  }
+
+  // Every match of the find box's text. `jump`: select the first one at or after the cursor.
+  // Also splits the text into lines and notes each match's line, for the find view.
+  runFind(cx, jump) {
+    const q = this.find.value().toLowerCase();
+    this.matches = []; this.more = false; this.matchLine = []; this.hits = new Map();
+    if (q && this.code) {
+      const original = this.code.value(), text = original.toLowerCase();
+      for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
+        if (this.matches.length >= MAX_FIND) { this.more = true; break; }
+        this.matches.push(i);
+      }
+      this.lines = original.split("\n");
+      let line = 0, start = 0;
+      this.matches.forEach((m, i) => {
+        while (line < this.lines.length - 1 && m >= start + this.lines[line].length + 1) start += this.lines[line++].length + 1;
+        this.matchLine.push(line);
+        if (!this.hits.has(line)) this.hits.set(line, []);
+        this.hits.get(line).push({ col: m - start, i });
+      });
+    } else this.lines = [];
+    if (!this.matches.length) this.at = -1;
+    else if (jump) {
+      const from = this.code.selected_range().start, i = this.matches.findIndex(m => m >= from);
+      this.select(i < 0 ? 0 : i);
+    } else this.at = Math.min(Math.max(this.at, 0), this.matches.length - 1);
+    cx.notify();
+  }
+
+  select(i) {
+    this.at = i;
+    const start = this.matches[i];
+    this.code.set_selected_range({ start, end: start + this.find.value().length });
+    this.scroll.scroll_to_item(this.matchLine[i], "center");
+  }
+
+  // Leaves the find view for the editor, with the current match selected.
+  closeFind(cx) {
+    this.find.set_value(""); this.matches = []; this.lines = []; this.hits = new Map(); this.at = -1;
+    this.code?.focus(); cx.notify();
+  }
+
+  // A click on a line in the find view: its first match, else the line's start.
+  pickLine(line, cx) {
+    const hit = this.hits.get(line)?.[0];
+    if (hit) this.select(hit.i);
+    else {
+      let start = 0;
+      for (let l = 0; l < line; l++) start += this.lines[l].length + 1;
+      this.code.set_selected_range({ start, end: start });
+    }
+    this.closeFind(cx);
+  }
+
+  findView(t) {
+    const font = settings().font_family, q = this.find.value().length, mark = tint(t.ansi3, "55", t.selected);
+    const row = (n) => {
+      const text = this.lines[n] ?? "", spans = [];
+      let at = 0;
+      const plain = (to) => { if (to > at) spans.push(div().flex_none().child(text.slice(at, to).replace(/\t/g, "    "))); };
+      for (const h of this.hits.get(n) ?? []) {
+        if (h.col > 2000) break;
+        plain(h.col);
+        const current = h.i === this.at;
+        spans.push(div().flex_none().rounded(2).bg(current ? t.ansi3 : mark).text_color(current ? t.background : t.foreground)
+          .child(text.slice(h.col, h.col + q).replace(/\t/g, "    ")));
+        at = h.col + q;
+      }
+      plain(Math.min(text.length, Math.max(at, 2000)));
+      return h_flex().h(ROW).items_center().whitespace_nowrap().cursor_pointer().hover(s => s.bg(t.hover))
+        .bg(this.matchLine[this.at] === n ? t.hover : t.background)
+        .child(div().w(52).flex_none().pr(12).text_right().text_color(this.hits.has(n) ? t.muted : t.dim).child(String(n + 1)))
+        .child(h_flex().flex_1().min_w(0).overflow_hidden().children(spans));
+    };
+    return v_flex().relative().flex_1().min_h(0).font_family(font).text_size(13).text_color(t.foreground)
+      .child(v_virtual_list("fp-lines", this.lines.length, ROW, (i) => String(i),
+        (range) => { const out = []; for (let i = range.start; i < range.end; i++) out.push(row(i)); return out; })
+        .track_scroll(this.scroll).on_item_click((key, cx) => this.pickLine(Number(key), cx)).size_full())
+      .child(Scrollbar.vertical("fp-lines").absolute().inset_0());
+  }
+
+  step(by, cx) {
+    const n = this.matches.length;
+    if (!n) return;
+    this.select(((this.at < 0 ? (by > 0 ? -1 : 0) : this.at) + by + n) % n);
+    cx.notify();
+  }
+
+  openFind(cx) {
+    const sel = this.code?.selected_range(), picked = sel && sel.end > sel.start && sel.end - sel.start < 200
+      ? this.code.value().slice(sel.start, sel.end) : null;
+    if (picked && !picked.includes("\n")) this.find.set_value(picked);
+    const v = this.find.value();
+    this.find.set_selected_range({ start: 0, end: v.length });
+    this.find.focus();
+    this.runFind(cx, false);
   }
 
   // Which tab shows this copy: props() doesn't say, so it's the file tab no other file
@@ -357,7 +468,7 @@ class FileTab {
         this.disk = text;
         this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: this.readonly, value: text,
           font_family: settings().font_family, font_size: 13, syntax: SYNTAX(theme()) });
-        this.code.on("change", (_e, cx) => this.setDirty(this.code.value() !== this.disk, cx));
+        this.code.on("change", (_e, cx) => { this.setDirty(this.code.value() !== this.disk, cx); if (this.find.value()) this.runFind(cx, false); });
         if (line > 0) this.goto(line);
         this.code.focus();
       } catch { this.error = "Cannot open this file (binary, over 1 MB, or unreadable)"; }
@@ -390,6 +501,7 @@ class FileTab {
           const at = this.code.selected_range();
           this.disk = text; this.code.set_value(text);
           this.code.set_selected_range({ start: Math.min(at.start, text.length), end: Math.min(at.end, text.length) });
+          if (this.find.value()) this.runFind(cx, false);
           cx.notify();
         }
       } catch { /* the folder went away: stop watching */ }
@@ -418,14 +530,30 @@ class FileTab {
   reload(cx) {
     this.code?.release(); this.code = null; this.dirty = false; this.conflict = false; this.error = null;
     if (this.tab) run("tab.rename", { id: this.tab, name: this.name });
+    this.matches = []; this.at = -1;
     this.load(cx);
     cx.notify();
   }
 
   async close() {
     this.closed = true;
+    this.find.release(); this.scroll.release();
     const tabs = shared("files-plus.tabs") ?? {};
     if (tabs[this.key] && tabs[this.key] === this.tab) { const { [this.key]: _, ...rest } = tabs; setShared("files-plus.tabs", rest); }
+  }
+
+  findBar(t) {
+    const q = this.find.value(), n = this.matches.length;
+    const count = !q ? "" : n ? `${this.at + 1}/${n}${this.more ? "+" : ""}` : "No results";
+    const arrow = (id, text, by) => div().id(id).w(18).flex_none().text_center().rounded(4)
+      .text_color(n ? t.muted : t.dim).when(n > 0, el => el.cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground)))
+      .on_click((_e, cx) => this.step(by, cx)).child(text);
+    return h_flex().flex_none().gap(4).items_center().pl(6)
+      .child(Input.new(this.find).w(200).h(22).px(7).rounded(6).border_1()
+        .border_color(this.findFocused ? t.accent : t.input).bg(t.background).text_size(12).text_color(t.foreground))
+      .child(div().w(62).flex_none().text_right().text_size(11).text_color(q && !n ? t.ansi1 : t.dim).child(count))
+      .child(arrow("fp-find-prev", "↑", -1))
+      .child(arrow("fp-find-next", "↓", 1));
   }
 
   render(cx) {
@@ -437,8 +565,13 @@ class FileTab {
     const link = (id, text, action) => div().id(id).flex_none().cursor_pointer().text_color(t.accent).hover(s => s.opacity(0.8)).on_click(action).child(text);
     return v_flex().id("fp-tab").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .on_key_down((e, cx) => {
-        const m = e.modifiers ?? {};
-        if ((m.platform || m.control) && e.key === "s") { this.save(cx); cx.stop_propagation(); }
+        const m = e.modifiers ?? {}, cmd = m.platform || m.control;
+        if (cmd && e.key === "s") this.save(cx);
+        else if (cmd && e.key === "f" && this.code) this.openFind(cx);
+        else if (cmd && e.key === "g") this.step(m.shift ? -1 : 1, cx);
+        else if (e.key === "escape" && (this.findFocused || this.find.value())) this.closeFind(cx);
+        else return;
+        cx.stop_propagation(); cx.notify();
       })
       .child(h_flex().h(30).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(12)
         .child(iconFor(this.name, false, false))
@@ -447,9 +580,10 @@ class FileTab {
           .child(div().flex_none().text_color(t.ansi1).child("Changed on disk"))
           .child(link("fp-reload", "Reload", (_e, cx) => this.reload(cx)))
           .child(link("fp-overwrite", "Overwrite", (_e, cx) => this.save(cx, true))))
-        .when(!this.conflict, el => el.child(div().flex_none().text_color(this.dirty ? t.blocked : t.dim).child(status))))
-      .child(this.code
-        ? Editor.new(this.code).flex_1().min_h(0)
+        .when(!this.conflict, el => el.child(div().flex_none().text_color(this.dirty ? t.blocked : t.dim).child(status)))
+        .when(Boolean(this.code), el => el.child(this.findBar(t))))
+      .child(this.code && this.find.value() ? this.findView(t)
+        : this.code ? Editor.new(this.code).flex_1().min_h(0)
         : div().p(14).text_color(t.dim).child(this.error || "Loading file…"));
   }
 }

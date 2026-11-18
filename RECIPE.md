@@ -56,8 +56,15 @@ One column on the `background` color, radius 10, a 1px `border`, base type 13px.
   the file's icon, its full path in `muted` (`machine:path` elsewhere), and on the right
   `Saved` / `Saving…` in `dim`, `Modified · ⌘S to save` in `blocked`, or `Read-only on
   <machine>`. On a save conflict: `Changed on disk` in `ansi1` with `Reload` and `Overwrite`
-  links in `accent`. Below, the whole file in an editable code editor at 13px with the same
-  syntax colors as the preview.
+  links in `accent`. Then the find box: an input 200px wide, 22px tall, radius 6, 1px border
+  (`accent` while focused, else `input`), placeholder `Find in file…`, 12px; a 62px count at
+  11px (`3/12` in `dim`, `No results` in `ansi1`); ↑ and ↓ buttons, 18px, `muted`, `hover`
+  background. Below, the whole file in an editable code editor at 13px with the same
+  syntax colors as the preview. While the find box has text, the editor gives way to the
+  find view: the file's lines, read-only, in the person's font at 13px, 20px rows with the
+  line number in a 52px column (`muted` on lines with a match, else `dim`); each match on
+  `ansi3` at 33% opacity, the current one on solid `ansi3` with `background` text, its row
+  on `hover`. Lines past 2,000 characters are cut; tabs show as 4 spaces.
 - **Drag label**, while dragging: a 26px chip at the pointer (14px right, 8px down), radius
   7, `popover` with `shadow_md` and a 1px border (`accent` when the drop is allowed, else
   `border`): the item's icon, its name (at most 160px), then `→ <folder>`, `copy to <folder>`
@@ -89,7 +96,14 @@ One column on the `background` color, radius 10, a 1px `border`, base type 13px.
   (up to 1 MB, readTextFile's limit) is editable on this computer and read-only elsewhere.
   ⌘S saves with `writeTextFile` against the text it read, so a change made on disk meanwhile
   isn't overwritten: the bar offers Reload or Overwrite. With no unsaved edits, changes on
-  disk are reloaded (folder watch). Clicking a file that already has a tab selects that tab
+  disk are reloaded (folder watch). ⌘F focuses the find box (with the editor's selection
+  in it when it's one line) and selects its text; typing selects the first match at or after
+  the cursor (literal, case-insensitive, up to 10,000 matches, recounted as the text
+  changes) and scrolls the find view to it. Enter or ⌘G selects the next match, ⇧Enter or
+  ⇧⌘G the previous, wrapping. Esc, or a click on a line (its first match, else its start),
+  empties the find box and returns to the editor with that spot selected. The find view
+  exists because the editor (`EditorState`) has no way to mark text; it's a
+  `v_virtual_list` with a `VirtualListScrollHandle`. Clicking a file that already has a tab selects that tab
   (and its space); from a text search it also selects the line. Which tab holds which file is
   kept in `files-plus.tabs` ("machine:path" → tab id); `props()` doesn't name the pane, so a
   new file tab claims the one `files-plus` tab no other file has.
