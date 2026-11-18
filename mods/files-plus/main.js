@@ -7,7 +7,7 @@
 // Drag a row onto a folder to move it (⌥ copies); drop files from Finder to copy them in.
 // The same mod also draws its own menu (props.menu) and dialogs (props.dialog).
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, InputState, Input, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextView, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, exec, run, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, shared, setShared, openOverlay, closeOverlay, notify } from "herdr";
 import * as ops from "./ops.js";
 import ICONS from "./icons.js";
@@ -336,6 +336,9 @@ class FileTab {
     this.path = p.file; this.on = p.on ?? null; this.key = tabKey(this.path, this.on);
     this.name = ops.base(this.path);
     this.readonly = Boolean(this.on);
+    // Markdown opens rendered (the editor only colors its markers); a link to a line opens the source.
+    this.markdown = /\.(md|markdown|mdx)$/i.test(this.name);
+    this.preview = this.markdown && !(p.line > 0);
     this.gotoN = shared("files-plus.goto")?.n;
     this.matches = []; this.at = -1; this.lines = [];
     this.scroll = VirtualListScrollHandle.new();
@@ -451,6 +454,7 @@ class FileTab {
   }
 
   openFind(cx) {
+    this.showSource();
     const sel = this.code?.selected_range(), picked = sel && sel.end > sel.start && sel.end - sel.start < 200
       ? this.code.value().slice(sel.start, sel.end) : null;
     if (picked && !picked.includes("\n")) this.find.set_value(picked);
@@ -482,7 +486,8 @@ class FileTab {
         const ext = this.name.includes(".") ? this.name.split(".").pop().toLowerCase() : "txt";
         this.disk = text;
         this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: this.readonly, value: text,
-          font_family: settings().font_family, font_size: 13, syntax: SYNTAX(theme()) });
+          font_family: settings().font_family, font_size: 13,
+          syntax: this.markdown ? { ...SYNTAX(theme()), punctuation: theme().ansi5 } : SYNTAX(theme()) });
         this.code.on("change", (_e, cx) => { this.setDirty(this.code.value() !== this.disk, cx); if (this.find.value()) this.runFind(cx, false); });
         if (line > 0) this.goto(line);
         this.code.focus();
@@ -491,7 +496,41 @@ class FileTab {
     });
   }
 
+  showSource() {
+    if (!this.preview) return;
+    this.preview = false;
+    this.code?.focus();
+  }
+
+  // The rendered file. Web links open in the browser; links to other files open in their tab.
+  previewView(t) {
+    return div().id("fp-md-scroll").flex_1().min_h(0).overflow_y_scroll().bg(t.background)
+      .child(div().px(28).py(20).max_w(900)
+        .child(TextView.markdown("fp-md", this.code.value()).selectable(true)
+          .on_link_click((url, cx) => {
+            if (/^https?:\/\//i.test(url)) return cx.open_url(url);
+            if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("#")) return;
+            const rel = decodeURIComponent(url.split("#")[0]);
+            if (!rel) return;
+            const parts = [];
+            for (const part of (rel.startsWith("/") ? rel : `${ops.parent(this.path)}/${rel}`).split("/")) {
+              if (part === "..") parts.pop(); else if (part && part !== ".") parts.push(part);
+            }
+            openFile("/" + parts.join("/"), this.on);
+          })));
+  }
+
+  modeSwitch(t) {
+    const pick = (id, text, on, action) => div().id(id).px(7).py(1).rounded(5).cursor_pointer()
+      .when(on, el => el.bg(t.hover)).text_color(on ? t.foreground : t.dim)
+      .hover(s => s.text_color(t.foreground)).on_click(action).child(text);
+    return h_flex().flex_none().gap(2).items_center()
+      .child(pick("fp-mode-preview", "Preview", this.preview, (_e, cx) => { this.preview = true; cx.notify(); }))
+      .child(pick("fp-mode-source", "Edit", !this.preview, (_e, cx) => { this.showSource(); cx.notify(); }));
+  }
+
   goto(line) {
+    this.showSource();
     const r = this.code && lineRange(this.code.value(), line);
     if (r) { this.code.set_selected_range(r); this.code.focus(); }
   }
@@ -596,8 +635,10 @@ class FileTab {
           .child(link("fp-reload", "Reload", (_e, cx) => this.reload(cx)))
           .child(link("fp-overwrite", "Overwrite", (_e, cx) => this.save(cx, true))))
         .when(!this.conflict, el => el.child(div().flex_none().text_color(this.dirty ? t.blocked : t.dim).child(status)))
-        .when(Boolean(this.code), el => el.child(this.findBar(t))))
-      .child(this.code && this.find.value() ? this.findView(t)
+        .when(this.markdown && Boolean(this.code), el => el.child(this.modeSwitch(t)))
+        .when(Boolean(this.code) && !this.preview, el => el.child(this.findBar(t))))
+      .child(this.code && this.preview ? this.previewView(t)
+        : this.code && this.find.value() ? this.findView(t)
         : this.code ? Editor.new(this.code).flex_1().min_h(0)
         : div().p(14).text_color(t.dim).child(this.error || "Loading file…"));
   }

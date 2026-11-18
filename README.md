@@ -12,6 +12,9 @@ rename, duplicate and trash; drag to move; filter by name and search inside file
   syntax colors. ⌘S saves; the tab shows `●` while there are unsaved changes. Clicking it
   again goes back to its tab. ⌘F finds text in the file with every match marked
   (Enter / ⇧Enter or ⌘G / ⇧⌘G to move between them, Esc back to editing). Space still gives a quick look inside the panel.
+- **Markdown opens rendered**: headings, links, code and quotes styled, with *Preview* / *Edit*
+  at the top of the tab (⌘F and links to a line go to *Edit*, where the markers are colored).
+  Links in the preview open web pages in the browser and other files in their tab.
 - **Right-click menu** on files, folders and the empty area: New file, New folder, Rename,
   Duplicate, Cut, Copy, Paste, Copy path, Reveal in Finder, Move to Trash.
 - **Drag and drop** a row onto a folder to move it; hold **⌥** to copy. Closed folders open
