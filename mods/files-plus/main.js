@@ -344,8 +344,23 @@ class FileTab {
     this.find.on("submit", (e, cx) => this.step(e?.shift ? -1 : 1, cx));
     this.find.on("focus", (_e, cx) => { this.findFocused = true; cx.notify(); });
     this.find.on("blur", (_e, cx) => { this.findFocused = false; cx.notify(); });
+    if (p.link) cx.timer.after(150, () => this.toOpenTab(p.line));
     this.load(cx, p.line);
     if (!this.on) this.watch(cx);
+  }
+
+  // Opened by Herdr Links (links/), which can only make new tabs: when the file already
+  // has one, go there and close this tab. This tab is the focused one, a file tab no other
+  // file has claimed; anything else and it stays open. Called once the tab is in panes().
+  toOpenTab(line) {
+    const tabs = shared("files-plus.tabs") ?? {}, live = fileTabs();
+    const id = tabs[this.key], mine = focused()?.tab;
+    if (!id || !mine || id === mine || !live.has(id) || !live.has(mine) || Object.values(tabs).includes(mine)) return;
+    const space = spaces().find(s => s.tabs.some(t => t.id === id));
+    if (space && !space.active) run("space.select", { id: space.id });
+    run("tab.select", { id });
+    if (line > 0) setShared("files-plus.goto", { key: this.key, line, n: Date.now() });
+    run("tab.close", { id: mine });
   }
 
   // Every match of the find box's text. `jump`: select the first one at or after the cursor.

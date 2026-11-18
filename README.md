@@ -49,6 +49,23 @@ Or by hand:
 4. Run `herdr-app check ~/.config/herdr-app/mods/files-plus`. The Files button now opens
    Files Plus. Switch back to `main` any time to get the original.
 
+### File links from agents (optional, macOS)
+
+Clicking a file link that Claude Code or Codex prints normally opens VS Code or whatever app
+the file type belongs to. `links/install.sh` builds a small app, `~/Applications/Herdr Links.app`,
+that opens those links in a Files Plus tab instead, at the linked line:
+
+- it becomes the default app for text and code files (`.md`, `.ts`, `.py`, `.json`, …; the list
+  is `EXTENSIONS` in `links/HerdrLinks.swift`), which catches Claude Code's `file://` links,
+  and Finder double-clicks too;
+- it handles `vscode-insiders://file/…` links, and sets Codex's `file_opener = "vscode-insiders"`
+  so Codex prints those (restart Codex sessions afterwards).
+
+A file that already has a tab opens in that tab. If Herdr isn't running, it starts first.
+`file://` links open at the top of the file: macOS drops a `#L12` from them before the app sees it.
+The previous default apps are saved, and `links/uninstall.sh` restores them along with Codex's
+setting.
+
 **Heads-up:** this mod runs programs (`sh`, `git`, `cp`, `mv`, `rm`, `trash`, `rg`/`grep`)
 and changes files in the folder you are looking at. It doesn't use the network.
 
