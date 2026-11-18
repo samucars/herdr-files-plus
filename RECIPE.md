@@ -47,10 +47,17 @@ One column on the `background` color, radius 10, a 1px `border`, base type 13px.
     24px row per hit, indented 29px: the line number right-aligned in 34px (11px `dim`) and
     the line, trimmed and cut to about 160 characters around the match, at 12px `muted`.
   - `Showing the first 300 matches` / `Showing the first 2000 lines` when capped.
-- **Preview** (double-click a file): a read-only code editor with line numbers, the
+- **Preview** (Space on a selected file): a read-only code editor with line numbers, the
   person's font at 12px and syntax colors from the theme (keyword `ansi5`, string `ansi2`,
   comment `dim`, function `ansi4`, type `ansi3`, number `ansi1`, constant `ansi6`).
   `Binary file · no text preview` for binary files; text past 400,000 characters is cut.
+- **File tab** (click a file): a new tab named after the file, `● name` while there are
+  unsaved changes. A 30px bar with a 1px `border` line below, 12px side padding, 12px type:
+  the file's icon, its full path in `muted` (`machine:path` elsewhere), and on the right
+  `Saved` / `Saving…` in `dim`, `Modified · ⌘S to save` in `blocked`, or `Read-only on
+  <machine>`. On a save conflict: `Changed on disk` in `ansi1` with `Reload` and `Overwrite`
+  links in `accent`. Below, the whole file in an editable code editor at 13px with the same
+  syntax colors as the preview.
 - **Drag label**, while dragging: a 26px chip at the pointer (14px right, 8px down), radius
   7, `popover` with `shadow_md` and a 1px border (`accent` when the drop is allowed, else
   `border`): the item's icon, its name (at most 160px), then `→ <folder>`, `copy to <folder>`
@@ -75,10 +82,18 @@ One column on the `background` color, radius 10, a 1px `border`, base type 13px.
   machine when one is focused), else the space's folder. It follows focus; each folder keeps
   its own open folders and preview. Reloads on a folder watch (this machine), every 10 s,
   and right after any change it makes. Folders that vanish (renamed, moved, deleted) close.
-- **Clicks:** a click selects a row (and opens or closes a folder); a double-click on a file
-  opens the preview; `←` or Esc goes back. Right-click a row for its menu; right-click the
+- **Clicks:** a click selects a row and opens or closes a folder, or opens a file in its own
+  tab. Space previews the selected file inside the panel; `←` or Esc goes back. Right-click a row for its menu; right-click the
   empty area for the root's (New file, New folder, Paste, Copy path, Reveal in Finder).
-- **Menu items:** Open (files), New file…, New folder… (folders and root), Rename…,
+- **File tabs:** `tab.new {name, mod: "files-plus", props: {file, on, line}}`. The file
+  (up to 1 MB, readTextFile's limit) is editable on this computer and read-only elsewhere.
+  ⌘S saves with `writeTextFile` against the text it read, so a change made on disk meanwhile
+  isn't overwritten: the bar offers Reload or Overwrite. With no unsaved edits, changes on
+  disk are reloaded (folder watch). Clicking a file that already has a tab selects that tab
+  (and its space); from a text search it also selects the line. Which tab holds which file is
+  kept in `files-plus.tabs` ("machine:path" → tab id); `props()` doesn't name the pane, so a
+  new file tab claims the one `files-plus` tab no other file has.
+- **Menu items:** Open (files, in a tab), New file…, New folder… (folders and root), Rename…,
   Duplicate, Cut, Copy, Paste (into the folder, or the file's folder; "Paste N items" for
   more than one), Copy path and Reveal in Finder (macOS; Reveal only on this machine), Move to
   Trash (this Mac) or Delete… (elsewhere). ↑/↓ and Enter work in the menu.
@@ -104,17 +119,17 @@ One column on the `background` color, radius 10, a 1px `border`, base type 13px.
   and `node_modules`; at most 20,000), kept 15 s or until a change. Matches are
   case-insensitive substrings of the path; folders match too (from the files' paths). Order:
   name starts with it, name contains it, path contains it; then shorter paths. Clicking a file
-  previews it; clicking a folder clears the search and reveals it in the tree.
+  opens its tab; clicking a folder clears the search and reveals it in the tree.
 - **Inside files search:** literal, case-insensitive. `rg` when installed, else `git grep
   --untracked --exclude-standard` in a repo, else `grep -rnI` without `.git` and
-  `node_modules`. At most 50 hits per file and 2,000 in all. Clicking a hit opens the preview
+  `node_modules`. At most 50 hits per file and 2,000 in all. Clicking a hit opens the file's tab
   with that line selected.
 - Errors from changes show as a notification (`notify`, level error) titled "Files".
 
 ## Built from
 
-- `mods/files-plus/main.js`: one `View`, default export, that is three things by `props()`:
-  the panel (no props), the menu (`{ menu: true, ctx }`, a popup) and the dialogs
+- `mods/files-plus/main.js`: one `View`, default export, that is four things by `props()`:
+  the panel (no props), a file tab (`{ file, on, line }`), the menu (`{ menu: true, ctx }`, a popup) and the dialogs
   (`{ dialog: "rename" | "newFile" | "newFolder" | "delete", ctx, value }`). `ctx` is
   `{ key, root, on, rel, dir }`: the panel's location key, root folder, machine, the path
   relative to root ("" = root) and whether it is a folder. `mod.json`: `{ "place": "none" }`.
@@ -134,7 +149,8 @@ One column on the `background` color, radius 10, a 1px `border`, base type 13px.
   `settings`, `window`, `props`, `shared`/`setShared` (`files-plus.clipboard`,
   `files-plus.rev` to reload, `files-plus.reveal` to show a path), `openOverlay`,
   `closeOverlay`, `notify`. `gpui-kit`: `View`, `div`, `svg`, `image`; `gpui-base`:
-  `v_flex`, `h_flex`, `Editor`, `EditorState`, `InputState`, `Input`.
+  `v_flex`, `h_flex`, `Editor`, `EditorState`, `InputState`, `Input`. `run` for `tab.new`,
+  `tab.select`, `space.select`, `tab.rename`; `writeTextFile` to save.
 - Programs: `sh`, `git`, `find`, `sed`, `head`, `sort`, `uniq`, `cp`, `mv`, `mkdir`, `rm`,
   `trash`, `rg`/`grep`, and on macOS `open -R` and `pbcopy`. The listing and the Windows
   PowerShell fallback come from Herdr's `files` mod; changes and search need `sh`.
@@ -156,8 +172,8 @@ One column on the `background` color, radius 10, a 1px `border`, base type 13px.
   whose reported cwd changes form (a symlinked path) looks like another folder.
 - Limits: 500 entries per folder and 5,000 in the tree; 20,000 files for the name search;
   300 name matches; 50 hits per file and 2,000 lines for the text search; previews cut at
-  400,000 characters. No multi-select; no editing file contents; no copy or move between
-  machines; no Windows support for changes and search.
+  400,000 characters; file tabs at 1 MB. No multi-select; no saving on other machines; no copy
+  or move between machines; no Windows support for changes and search.
 - It runs programs and changes files: Delete on a remote machine is permanent.
 
 ## Done when

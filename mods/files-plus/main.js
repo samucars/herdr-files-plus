@@ -1,5 +1,6 @@
 // A file browser for the focused pane's folder that can also change files:
 // right-click for New file/folder, Rename, Copy, Cut, Paste, Duplicate, Delete.
+// A click on a file opens it whole in a new tab (an editor; ⌘S saves); Space previews it here.
 // Keys (after clicking a row): ↑/↓ select, ←/→ fold, Space preview, Enter rename,
 // ⌘C ⌘X ⌘V copy/cut/paste, ⌘D duplicate, ⌘⌫ delete, Esc back from a preview.
 // Search box: ⌘F filters by file name, ⇧⌘F searches inside files, Esc clears.
@@ -7,7 +8,7 @@
 // The same mod also draws its own menu (props.menu) and dialogs (props.dialog).
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, props, shared, setShared, openOverlay, closeOverlay, notify } from "herdr";
+import { spaces, panes, focused, exec, run, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, shared, setShared, openOverlay, closeOverlay, notify } from "herdr";
 import * as ops from "./ops.js";
 import ICONS from "./icons.js";
 
@@ -135,10 +136,33 @@ const reveal = (ctx, path, preview = false) => {
   if (rel !== null) setShared("files-plus.reveal", { key: ctx.key, rel, preview, n: Date.now() });
 };
 
+// ---- Files in their own tab ---------------------------------------------------
+// A click opens the file in a tab whose only pane is this mod ({ file, on, line }).
+// "files-plus.tabs" maps "<machine>:<path>" to the tab showing it, so a second
+// click selects that tab instead of opening another.
+const tabKey = (path, on) => `${on ?? ""}:${path}`;
+// Tabs that hold a pane of this mod (a file tab; the panel lives in the layout, not a tab).
+const fileTabs = () => new Set(panes().filter(p => p.mod === "files-plus" && !p.terminal).map(p => p.tab));
+const lastOpen = new Map();
+function openFile(path, on, line = 0) {
+  const k = tabKey(path, on), id = (shared("files-plus.tabs") ?? {})[k];
+  const space = id && fileTabs().has(id) && spaces().find(s => s.tabs.some(t => t.id === id));
+  if (space) {
+    if (!space.active) run("space.select", { id: space.id });
+    run("tab.select", { id });
+    if (line > 0) setShared("files-plus.goto", { key: k, line, n: Date.now() });
+    return;
+  }
+  // A double-click sends two clicks: the tab from the first isn't registered yet.
+  if (Date.now() - (lastOpen.get(k) ?? 0) < 1500) return;
+  lastOpen.set(k, Date.now());
+  run("tab.new", { name: ops.base(path), mod: "files-plus", props: { file: path, on: on ?? null, line } });
+}
+
 async function act(name, ctx) {
   try {
     switch (name) {
-      case "open": return reveal(ctx, abs(ctx), true);
+      case "open": return openFile(abs(ctx), ctx.on);
       case "rename": return openOverlay({ mod: "files-plus", kind: "dialog", width: 420, props: { dialog: "rename", ctx, value: ops.base(abs(ctx)) } });
       case "newFile": case "newFolder":
         return openOverlay({ mod: "files-plus", kind: "dialog", width: 420, props: { dialog: name, ctx: { ...ctx, rel: relOf(ctx, folderOf(ctx)), dir: true }, value: "" } });
@@ -287,6 +311,149 @@ class DeleteDialog {
   }
 }
 
+// The whole file in an editor, in its own tab. ⌘S saves (this computer only:
+// writeTextFile can't reach other machines, so files there are read-only).
+// A save refuses to overwrite changes made on disk since the file was read.
+const SYNTAX = (t) => ({ keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 });
+const lineRange = (text, line) => {
+  let start = 0;
+  for (let i = 1; i < line && start >= 0; i++) start = text.indexOf("\n", start) + 1 || -1;
+  if (start < 0) return null;
+  const end = text.indexOf("\n", start);
+  return { start, end: end < 0 ? text.length : end };
+};
+
+class FileTab {
+  constructor(cx) {
+    const p = props();
+    this.path = p.file; this.on = p.on ?? null; this.key = tabKey(this.path, this.on);
+    this.name = ops.base(this.path);
+    this.readonly = Boolean(this.on);
+    this.gotoN = shared("files-plus.goto")?.n;
+    this.load(cx, p.line);
+    if (!this.on) this.watch(cx);
+  }
+
+  // Which tab shows this copy: props() doesn't say, so it's the file tab no other file
+  // has claimed (files open one at a time, and the map is kept across restarts).
+  register() {
+    const tabs = shared("files-plus.tabs") ?? {}, live = fileTabs();
+    if (live.has(tabs[this.key])) { this.tab = tabs[this.key]; return; }
+    const claimed = new Set(Object.entries(tabs).filter(([k, id]) => k !== this.key && live.has(id)).map(([, id]) => id));
+    const free = [...live].filter(id => !claimed.has(id)), f = focused()?.tab;
+    this.tab = free.length === 1 ? free[0] : free.includes(f) ? f : null;
+    if (!this.tab) return;
+    const keep = Object.fromEntries(Object.entries(tabs).filter(([, id]) => live.has(id)));
+    setShared("files-plus.tabs", { ...keep, [this.key]: this.tab });
+  }
+
+  load(cx, line) {
+    cx.spawn(async cx => {
+      try {
+        const text = await readTextFile(this.path, { on: this.on });
+        if (text === null) { this.error = "This file is no longer available"; return; }
+        if (text.includes("\0")) { this.error = "Binary file · no text preview"; return; }
+        const ext = this.name.includes(".") ? this.name.split(".").pop().toLowerCase() : "txt";
+        this.disk = text;
+        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: this.readonly, value: text,
+          font_family: settings().font_family, font_size: 13, syntax: SYNTAX(theme()) });
+        this.code.on("change", (_e, cx) => this.setDirty(this.code.value() !== this.disk, cx));
+        if (line > 0) this.goto(line);
+        this.code.focus();
+      } catch { this.error = "Cannot open this file (binary, over 1 MB, or unreadable)"; }
+      finally { cx.notify(); }
+    });
+  }
+
+  goto(line) {
+    const r = this.code && lineRange(this.code.value(), line);
+    if (r) { this.code.set_selected_range(r); this.code.focus(); }
+  }
+
+  setDirty(dirty, cx) {
+    if (this.dirty === dirty) return;
+    this.dirty = dirty; this.conflict = false;
+    if (this.tab) run("tab.rename", { id: this.tab, name: dirty ? `● ${this.name}` : this.name });
+    cx.notify();
+  }
+
+  // Reloads changes made on disk while there are no unsaved edits here.
+  watch(cx) {
+    cx.spawn(async cx => {
+      try {
+        for (;;) {
+          await watchFolder(ops.parent(this.path));
+          if (this.closed) return;
+          if (!this.code || this.dirty || this.saving) continue;
+          const text = await readTextFile(this.path).catch(() => undefined);
+          if (text == null || text === this.disk || text.includes("\0")) continue;
+          const at = this.code.selected_range();
+          this.disk = text; this.code.set_value(text);
+          this.code.set_selected_range({ start: Math.min(at.start, text.length), end: Math.min(at.end, text.length) });
+          cx.notify();
+        }
+      } catch { /* the folder went away: stop watching */ }
+    });
+  }
+
+  save(cx, force = false) {
+    if (!this.code || this.readonly || this.saving) return;
+    const text = this.code.value();
+    this.saving = true; this.error = null; cx.notify();
+    cx.spawn(async cx => {
+      try {
+        const expected = force ? await readTextFile(this.path) : this.disk;
+        await writeTextFile(this.path, text, expected);
+        this.disk = text; this.conflict = false;
+        this.setDirty(this.code.value() !== text, cx);
+        ops.changed();
+      } catch (e) {
+        const now = await readTextFile(this.path).catch(() => null);
+        if (now !== this.disk) this.conflict = true;
+        else fail(e);
+      } finally { this.saving = false; cx.notify(); }
+    });
+  }
+
+  reload(cx) {
+    this.code?.release(); this.code = null; this.dirty = false; this.conflict = false; this.error = null;
+    if (this.tab) run("tab.rename", { id: this.tab, name: this.name });
+    this.load(cx);
+    cx.notify();
+  }
+
+  async close() {
+    this.closed = true;
+    const tabs = shared("files-plus.tabs") ?? {};
+    if (tabs[this.key] && tabs[this.key] === this.tab) { const { [this.key]: _, ...rest } = tabs; setShared("files-plus.tabs", rest); }
+  }
+
+  render(cx) {
+    this.register();
+    const g = shared("files-plus.goto");
+    if (g && g.n !== this.gotoN) { this.gotoN = g.n; if (g.key === this.key) this.goto(g.line); }
+    const t = theme();
+    const status = this.saving ? "Saving…" : this.readonly ? `Read-only on ${this.on}` : this.dirty ? "Modified · ⌘S to save" : "Saved";
+    const link = (id, text, action) => div().id(id).flex_none().cursor_pointer().text_color(t.accent).hover(s => s.opacity(0.8)).on_click(action).child(text);
+    return v_flex().id("fp-tab").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
+      .on_key_down((e, cx) => {
+        const m = e.modifiers ?? {};
+        if ((m.platform || m.control) && e.key === "s") { this.save(cx); cx.stop_propagation(); }
+      })
+      .child(h_flex().h(30).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(12)
+        .child(iconFor(this.name, false, false))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(this.on ? `${this.on}:${this.path}` : this.path))
+        .when(Boolean(this.conflict), el => el
+          .child(div().flex_none().text_color(t.ansi1).child("Changed on disk"))
+          .child(link("fp-reload", "Reload", (_e, cx) => this.reload(cx)))
+          .child(link("fp-overwrite", "Overwrite", (_e, cx) => this.save(cx, true))))
+        .when(!this.conflict, el => el.child(div().flex_none().text_color(this.dirty ? t.blocked : t.dim).child(status))))
+      .child(this.code
+        ? Editor.new(this.code).flex_1().min_h(0)
+        : div().p(14).text_color(t.dim).child(this.error || "Loading file…"));
+  }
+}
+
 function button(id, text, primary, action, danger = false) {
   const t = theme(), bg = danger ? t.ansi1 : primary ? t.solid : t.raised;
   return h_flex().id(id).h(32).px(14).items_center().rounded(8)
@@ -300,6 +467,7 @@ function button(id, text, primary, action, danger = false) {
 export default class Files extends View {
   init(_props, cx) {
     const p = props();
+    if (p?.file) { this.part = new FileTab(cx); return; }
     if (p?.menu) { this.part = new Menu(cx); return; }
     if (p?.dialog === "delete") { this.part = new DeleteDialog(cx); return; }
     if (p?.dialog) { this.part = new NameDialog(cx); return; }
@@ -318,6 +486,8 @@ export default class Files extends View {
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
   }
+
+  async close(cx) { await this.part?.close?.(cx); }
 
   ctx(rel, dir) {
     return { key: this.context.key, root: this.root, on: this.on ?? null, rel, dir };
@@ -526,7 +696,7 @@ export default class Files extends View {
     if (k === "escape" && this.query) { this.clearSearch(cx); cx.stop_propagation(); return; }
     if (k === "enter" && this.found?.mode === "text") {
       const sel = this.visible.find(v => v.rel === this.selected);
-      if (sel) { this.show(sel.rel, cx, sel.line); cx.stop_propagation(); cx.notify(); }
+      if (sel) { openFile(`${this.root}/${sel.rel}`, this.on, sel.line); cx.stop_propagation(); cx.notify(); }
       return;
     }
     const list = this.visible, i = list.findIndex(v => v.rel === this.selected), sel = list[i];
@@ -622,7 +792,7 @@ export default class Files extends View {
           if (Date.now() - (this.dropAt ?? 0) < 400) return;
           this.handle.focus(); this.selected = path;
           if (entry.dir) this.toggle(path, cx);
-          else if (e.click_count >= 2) this.show(path, cx);
+          else if (e.click_count < 2) openFile(`${this.root}/${path}`, this.on);
           cx.notify();
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.handle.focus(); this.menu(path, entry.dir); cx.notify(); })
@@ -656,7 +826,7 @@ export default class Files extends View {
         out.push(row(`fp-n-${h.rel}`, h.rel, h.dir).on_click((e, cx) => {
           this.handle.focus(); this.selected = h.rel;
           if (h.dir) { const ctx = this.ctx(h.rel, true); this.clearSearch(cx); reveal(ctx, abs(ctx)); }
-          else this.show(h.rel, cx);
+          else openFile(`${this.root}/${h.rel}`, this.on);
           cx.notify();
         }));
       }
@@ -664,10 +834,10 @@ export default class Files extends View {
       for (const file of f.files) {
         this.visible.push({ rel: file.rel, dir: false, line: file.hits[0].line });
         out.push(row(`fp-t-${file.rel}`, file.rel, false, file.hits.length)
-          .on_click((_e, cx) => { this.handle.focus(); this.selected = file.rel; this.show(file.rel, cx, file.hits[0].line); cx.notify(); }));
+          .on_click((_e, cx) => { this.handle.focus(); this.selected = file.rel; openFile(`${this.root}/${file.rel}`, this.on, file.hits[0].line); cx.notify(); }));
         for (const hit of file.hits) out.push(h_flex().id(`fp-t-${file.rel}:${hit.line}`).h(24).flex_none().pl(29).pr(8).gap(8).items_center().rounded(6).cursor_pointer()
           .text_size(12).hover(s => s.bg(t.hover))
-          .on_click((_e, cx) => { this.handle.focus(); this.selected = file.rel; this.show(file.rel, cx, hit.line); cx.notify(); })
+          .on_click((_e, cx) => { this.handle.focus(); this.selected = file.rel; openFile(`${this.root}/${file.rel}`, this.on, hit.line); cx.notify(); })
           .child(div().w(34).flex_none().text_right().text_size(11).text_color(t.dim).child(String(hit.line)))
           .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(snippet(hit.text, q))));
       }

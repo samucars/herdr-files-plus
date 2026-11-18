@@ -8,13 +8,16 @@ rename, duplicate and trash; drag to move; filter by name and search inside file
 
 ## Features
 
+- **Files open in a tab**: click a file and it opens whole in a new tab, in an editor with
+  syntax colors. ⌘S saves; the tab shows `●` while there are unsaved changes. Clicking it
+  again goes back to its tab. Space still gives a quick look inside the panel.
 - **Right-click menu** on files, folders and the empty area: New file, New folder, Rename,
   Duplicate, Cut, Copy, Paste, Copy path, Reveal in Finder, Move to Trash.
 - **Drag and drop** a row onto a folder to move it; hold **⌥** to copy. Closed folders open
   when you hover them. Drop files from Finder to copy them in.
 - **Search**: *File names* filters the whole tree, closed folders included (it respects
   `.gitignore`); *Inside files* finds text with `rg`, `git grep` or `grep` and opens the file
-  at the matching line.
+  in its tab at the matching line.
 - **Icons and colors** from vscode-icons: about 1,900 file names, 1,000 extensions and 520
   folder names, with opened-folder icons.
 - **Safe by default**: copies never overwrite (`name copy.ext`, `name copy 2.ext`), moves and
@@ -24,7 +27,7 @@ rename, duplicate and trash; drag to move; filter by name and search inside file
 
 ### Keys
 
-Click a row first. ↑/↓ select · ←/→ close/open · Space preview · Enter rename · ⌘C ⌘X ⌘V
+Click a file to open it in a tab (⌘S saves there). In the panel: ↑/↓ select · ←/→ close/open · Space preview · Enter rename · ⌘C ⌘X ⌘V
 copy/cut/paste · ⌘D duplicate · ⌘⌫ delete · ⌘F search names · ⇧⌘F search inside files ·
 Esc clear.
 
@@ -50,7 +53,8 @@ and changes files in the folder you are looking at. It doesn't use the network.
 
 ## Limits
 
-No multi-select, no editing file contents, no copy or move between machines, and changes and
+No multi-select, no copy or move between machines, files on other machines open read-only,
+files over 1 MB don't open, and changes and
 search need `sh` (no Windows). The tree shows up to 500 entries per folder; searches are
 capped (300 names, 2,000 matching lines). See [RECIPE.md](RECIPE.md) for the full behavior.
 
